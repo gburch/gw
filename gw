@@ -1,0 +1,194 @@
+#!/bin/bash
+
+branch_name=$(git symbolic-ref HEAD 2>/dev/null)
+short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/\(.*\)/\1/')
+
+case "$branch_name" in
+*changes/topics/*)
+    very_short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/changes\/topics\/\([^\/]*\).*/\1/')
+    ;;
+*bugs/*)
+    very_short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/bugs\/\([^\/]*\)/\1/')
+esac
+
+
+case $1 in
+install)
+  pushd $(dirname "${0}") > /dev/null
+  basedir=$(pwd -L)
+  # Use "pwd -P" for the path without links. man bash for more info.
+  popd > /dev/null
+  ln -s $basedir/proj /usr/bin/proj
+  ;;
+  topic)
+    if git branch | grep ^..topics/$2>/dev/null 2>&1
+    then
+      echo "Feature $2 already exists. Use proj change <name> to modify"
+      exit 1;
+    fi
+
+    #git remote update origin
+
+    if git branch -a | grep ^..origin/topics/$2>/dev/null 2>&1
+    then
+      echo "Feature $2 already exists. Use proj change <name> to modify"
+      exit 1;
+    fi
+
+    git branch topics/$2 master
+    git co topics/$2
+    ;;
+  bug)
+    git branch bugs/$2 master
+    git co bugs/$2
+    ;;
+switch)
+  local_branches=$(git branch)
+  remote_branches=$(git branch -r)
+  all_branches=$(git branch -a)
+  echo "Local: $local_branches"
+  echo "Remote: $remote_branches"
+  #if there is a topic switch to that
+  has_branch=$(echo "$all_branches" | grep "topics/$2")
+  echo "Branches: $has_branch"
+  if [ -n "$has_branch" ]
+  then
+    git checkout topics/$2
+    exit 0
+  fi
+  #if there is a bug switch to that
+  #if there is a change switch to that
+  ;;
+review)
+  case "$branch_name" in
+    *refs/heads/changes/topics/*)
+#     git remote update origin
+      echo "topic $branch_name";
+      if git branch -r | grep origin/$very_short_name>/dev/null 2>&1
+      then
+        echo "Remote branch already exists, submitting changes for review"
+      else
+        echo "No remote branch for $very_short_name, creating one..."
+        git push origin refs/remotes/origin/master:refs/remotes/origin/$very_short_name
+      fi
+
+      echo "Submititng changes for review"
+
+      git push origin HEAD:refs/for/topics/$very_short_name
+      ;;
+    *refs/heads/topics*)
+      echo "It is bad practice to submit changes from a public topic branch, it leads to changes that are dependent."
+      echo "To resolve this please run proj change <name> && git merge $short_name && proj review"
+      ;;
+    *refs/heads/bugs/*)
+      
+      git push origin HEAD:refs/for/master
+      ;;
+  esac
+  ;;
+clean)
+  echo "Deleting bug branches that are merged with master"
+  git remote update
+  git remote prune origin
+  git symbolic-ref HEAD "refs/heads/master"
+  git branch -d $( git branch --merged | grep -v '^\*' | grep -v 'master' | grep "^  bugs/")
+    
+  git for-each-ref --format='%(refname)' refs/heads/topics/ | while read branch; do
+    git rev-parse --quiet --verify "$branch" > /dev/null || continue
+    echo "checking $branch"
+    topic_name=$(echo "$branch" | sed -e 's/refs\/heads\/topics\/\([^\/]*\).*/\1/')
+    echo "Topic: $topic_name"
+
+    echo "merged branches:"
+    git branch -d $( git branch --merged $branch | grep "^  changes/topics/$topic_name")
+    anyChanges=$(git rev-parse --branches=changes/topics/$topic_name/)
+    if [ -n "$anyChanges" ]
+    then
+      echo "There are unmerged changes skipping $topic_name"
+      continue
+    else
+      echo "Topic branch that is merged with no pending changes, deleting..."
+      remote=git branch -r | grep "^  topics/$topic_name"
+      if [ -n "$remote" ]
+      then
+        echo"Deleting remote branch..."
+        git push origin :topics/$topic_name
+      fi
+      git branch -d topics/$topic_name
+    fi
+  done
+  ;; 
+prototype)
+  echo "Updating remotes"
+  git remote update
+  echo "Pruning remote branches"
+  git remote prune origin
+  echo "Checking out master"
+  git co origin/master
+  git branch -D prototype
+  echo "Creating prototype branch"
+  git co -b prototype
+  echo "Starting Merge..."
+  git for-each-ref --shell \
+    --format='echo "Merging %(refname)" && git merge %(refname)' \
+    refs/remotes/origin/features/ | sh
+  ;;
+convert)
+  case "$2" in
+    topic)
+     if [[ "$branch_name" == *refs/heads/topics/* ]]
+     then
+         echo "Your current branch is already a topic branch";
+     else
+        git co -b topics/$very_short_name
+     fi
+      ;;
+    bug)
+      ;;
+    sandbox)
+      ;;
+  esac
+  ;;
+change)
+  echo "Creating change $2 based off of $short_name"
+  git branch $shortname changes/$short_name/$2
+  git co changes/$short_name/$2
+  ;;
+list)
+  if [ "$2" == "all" ]
+  then
+    local_topics=$(git branch | grep "^[\* ] topics/")
+    #TODO Don't rely on origin being the name of the remote
+    remote_topics=$( git branch -r | grep "^  origin/topic/" )
+    bugs=$( git branch | grep "^[\* ] bugs/" )
+    echo "Local Topics"
+    echo "$local_topics"
+    echo "Remote Topics"
+    echo "$remote_topics"
+    echo "Bugs"
+    echo "$bugs"
+    echo "Changes"
+  else
+    case "$branch_name" in
+    *changes/topics/*)
+      git branch | grep "^  changes/topics/$very_short_name"
+      ;;
+    *topics/*)
+      git branch | grep "^  changes/topics/$very_short_name"
+      ;;
+    esac
+  fi
+  ;;
+  
+*)
+   echo "That option is not recognized"
+   ;;
+esac
+
+#VN=$(git describe --abbrev=7 HEAD 2>/dev/null)  
+#
+#git update-index -q --refresh  
+#CHANGED=$(git diff-index --name-only HEAD --)  
+#if [ ! -z $CHANGED ];  
+#    then VN="$VN-mod"   
+#fi
