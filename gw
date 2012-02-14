@@ -18,7 +18,7 @@ install)
   basedir=$(pwd -L)
   # Use "pwd -P" for the path without links. man bash for more info.
   popd > /dev/null
-  ln -s $basedir/proj /usr/bin/proj
+  ln -s $basedir/gw /usr/bin/gw
   ;;
   topic)
     if git branch | grep ^..topics/$2>/dev/null 2>&1
