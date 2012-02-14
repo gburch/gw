@@ -1,0 +1,8 @@
+This tool is meant to standardize practices on larger teams (but can be used on smaller teams as well) around branching, publishing, and reviewing using Git & Gerrit.
+
+This is the initial version, it is not ready for use yet.
+
+The following will add gw to your path so that you can use it across repositories by typing gw [command]
+sudo ./gw install
+
+
