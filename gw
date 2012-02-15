@@ -4,11 +4,15 @@ branch_name=$(git symbolic-ref HEAD 2>/dev/null)
 short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/\(.*\)/\1/')
 
 case "$branch_name" in
-*changes/topics/*)
-    very_short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/changes\/topics\/\([^\/]*\).*/\1/')
+*changes/*)
+    very_short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/changes\/\([^\/]*\).*/\1/')
     ;;
 *bugs/*)
     very_short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/bugs\/\([^\/]*\)/\1/')
+    ;;
+*topics/*)
+    very_short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/topics\/\([^\/]*\)/\1/')
+    ;;
 esac
 
 
@@ -46,30 +50,84 @@ switch)
   local_branches=$(git branch)
   remote_branches=$(git branch -r)
   all_branches=$(git branch -a)
-  echo "Local: $local_branches"
-  echo "Remote: $remote_branches"
+
   #if there is a topic switch to that
   has_branch=$(echo "$all_branches" | grep "topics/$2")
-  echo "Branches: $has_branch"
+
   if [ -n "$has_branch" ]
   then
     git checkout topics/$2
     exit 0
+  else
+    echo "Branch not found, use gw list topics to see a list of topic branches"
   fi
   #if there is a bug switch to that
   #if there is a change switch to that
   ;;
+publish)
+  #Publish a topic branch right away, rather than waiting for a change
+  
+  if git branch -r | grep "^  origin/$short_name" >> /dev/null
+  then
+    echo "Topic branch already published"
+    exit 1;
+  fi
+
+  if git branch -a --merged master | grep "^[\* ] $short_name" >> /dev/null
+  then
+    git push -u origin $short_name
+  else
+    echo "Pending changes, use gw change $short_name && git merge $short_name && gw review"
+    echo "After you have resolved this you will also want to run gw reset $short_name to return"
+    echo "$short_name back to its remote state"
+  fi
+  ;;
+reset)
+  if git branch -r | grep "^  origin/$short_name" >> /dev/null
+  then
+    git reset remotes/origin/$short_name
+  else
+    git reset remotes/origin/master
+  fi
+  ;;
+show)
+  if [ -n $2 ]
+  then
+    commit=$2
+  fi
+  fetch_id=$(git log $commit | grep -m 1 "Change-Id" | sed -e "s/^.*Change-Id: \(.*\)$/\1/")
+  #todo fix disgusting yet awesome code
+#  fetch_id="Ib0fc89983007e531897854e3ece3d19e7b4b71a0"
+
+  id=$(curl -vs -H "Content-Type: application/json; charset=UTF-8" -H "Accept: application/json"\
+  -X POST -d '{"jsonrpc":"2.0","method":"allQueryNext","params":["'$fetch_id'","z",25],"id":3}'\
+  http://10.137.8.210:8080/gerrit/rpc/ChangeListService 2>&1 | sed -e 's/[{}]/''/g' | awk -v k="text" '{n=split($0,a,","); for (i=1; i<=n; i++) print a[i]}' |\
+  grep "\"changes\":\[\"id\":\"id\":" | sed "s/\"changes\":\[\"id\":\"id\":\(.*\)/\1/")
+  
+  if [ -n "$id" ]
+  then
+    echo "You can view your last change here: http://10.137.8.210:8080/$id"
+  else
+    echo "Change-Id not found in gerrit, are you sure you have submitted it? Or maybe you want a previous commit. Use gw show <hash> to get the url for a specific commit"
+  fi
+
+  ;;
 review)
+#get change url
+#grep "^remote:.*\(http://.*\)" test.txt | sed -e "s/.*\(http:\/\/.*\)/\1/"
   case "$branch_name" in
-    *refs/heads/changes/topics/*)
-#     git remote update origin
+    *refs/heads/changes/*)
+      #TODO: refactor into function since this is done in a couple of places, and in different ways
       echo "topic $branch_name";
-      if git branch -r | grep origin/$very_short_name>/dev/null 2>&1
+      if git branch -r | grep origin/topics/$very_short_name>/dev/null 2>&1
       then
         echo "Remote branch already exists, submitting changes for review"
       else
         echo "No remote branch for $very_short_name, creating one..."
-        git push origin refs/remotes/origin/master:refs/remotes/origin/$very_short_name
+        git symbolic-ref HEAD "refs/heads/topics/$very_short_name"
+        git push -u origin topics/$very_short_name
+        git symbolic-ref HEAD $branch_name
+#       git push origin remotes/origin/master:origin/topics/$very_short_name
       fi
 
       echo "Submititng changes for review"
@@ -77,8 +135,13 @@ review)
       git push origin HEAD:refs/for/topics/$very_short_name
       ;;
     *refs/heads/topics*)
-      echo "It is bad practice to submit changes from a public topic branch, it leads to changes that are dependent."
-      echo "To resolve this please run proj change <name> && git merge $short_name && proj review"
+       if [[ "$2" == "final"  ]]
+       then
+         git rebase master -i
+       else
+        echo "It is bad practice to submit changes from a public topic branch, it leads to changes that are dependent."
+        echo "To resolve this please run proj change <name> && git merge $short_name && proj review"
+      fi
       ;;
     *refs/heads/bugs/*)
       
@@ -100,15 +163,15 @@ clean)
     echo "Topic: $topic_name"
 
     echo "merged branches:"
-    git branch -d $( git branch --merged $branch | grep "^  changes/topics/$topic_name")
-    anyChanges=$(git rev-parse --branches=changes/topics/$topic_name/)
+    git branch -d $( git branch --merged $branch | grep "^  changes/$topic_name")
+    anyChanges=$(git rev-parse --branches=changes/$topic_name/)
     if [ -n "$anyChanges" ]
     then
       echo "There are unmerged changes skipping $topic_name"
       continue
     else
       echo "Topic branch that is merged with no pending changes, deleting..."
-      remote=git branch -r | grep "^  topics/$topic_name"
+      remote=$(git branch -r | grep "^  topics/$topic_name")
       if [ -n "$remote" ]
       then
         echo"Deleting remote branch..."
@@ -144,37 +207,59 @@ convert)
      fi
       ;;
     bug)
+     if [[ "$branch_name" == *refs/heads/bugs/* ]]
+     then
+         echo "Your current branch is already a bug branch";
+     else
+         git co -b bugs/$very_short_name
+     fi
       ;;
     sandbox)
       ;;
   esac
   ;;
 change)
-  echo "Creating change $2 based off of $short_name"
-  git branch $shortname changes/$short_name/$2
-  git co changes/$short_name/$2
+  echo "Creating change $2 based off of $very_short_name"
+  git branch changes/$very_short_name/$2 topics/$very_short_name
+  git co changes/$very_short_name/$2
   ;;
 list)
-  if [ "$2" == "all" ]
+  if [ -n "$2" ]
   then
-    local_topics=$(git branch | grep "^[\* ] topics/")
-    #TODO Don't rely on origin being the name of the remote
-    remote_topics=$( git branch -r | grep "^  origin/topic/" )
-    bugs=$( git branch | grep "^[\* ] bugs/" )
-    echo "Local Topics"
-    echo "$local_topics"
-    echo "Remote Topics"
-    echo "$remote_topics"
-    echo "Bugs"
-    echo "$bugs"
-    echo "Changes"
+    case "$2" in
+    all)
+      #TODO Don't rely on origin being the name of the remote
+
+      echo "Local Topics"
+      git branch | grep "^[\* ] topics/"
+      echo "Remote Topics"
+      git branch -r | grep "^  origin/topic/"
+      echo "Bugs"
+      git branch | grep "^[\* ] bugs/"
+      echo "Changes"
+      git branch | grep "^[\* ] changes/"
+      ;;
+    topics)
+      git branch | grep "^[\* ] topics/"
+      ;;
+    changes)
+      git branch | grep "^[\* ] changes/"
+      ;;
+    bugs)
+      git branch | grep "^[\* ] bugs/"
+      ;;
+    *)
+      #todo use basename $0
+        echo "Unrecognized switch, try gw list [all,topics,changes,bugs]"
+      ;;
+  esac
   else
     case "$branch_name" in
-    *changes/topics/*)
-      git branch | grep "^  changes/topics/$very_short_name"
+    *changes/*)
+      git branch | grep "^  changes/$very_short_name"
       ;;
     *topics/*)
-      git branch | grep "^  changes/topics/$very_short_name"
+      git branch | grep "^  changes/$very_short_name"
       ;;
     esac
   fi
