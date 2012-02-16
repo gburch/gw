@@ -151,10 +151,11 @@ review)
   ;;
 clean)
   echo "Deleting bug branches that are merged with master"
-  git remote update
   git remote prune origin
+
   git symbolic-ref HEAD "refs/heads/master"
-  git branch -d $( git branch --merged | grep -v '^\*' | grep -v 'master' | grep "^  bugs/")
+
+  git branch -D $( git branch --merged refs/remotes/origin/master | grep -v '^\*' | grep -v 'master' | grep "^  bugs/")
     
   git for-each-ref --format='%(refname)' refs/heads/topics/ | while read branch; do
     git rev-parse --quiet --verify "$branch" > /dev/null || continue
