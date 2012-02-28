@@ -1,5 +1,57 @@
 #!/bin/bash
 
+function loadConfig
+{
+  source $HOME/.gw/config
+}
+
+function searchGerrit
+{
+  curl -s -H "Content-Type: application/json; charset=UTF-8" -H "Accept: application/json"\
+  -X POST -d '{"jsonrpc":"2.0","method":"allQueryNext","params":["'$1'","z",25],"id":3}'\
+  http://10.137.8.210:8080/gerrit/rpc/ChangeListService 2>&1 #| sed -e 's/[{}]/''/g' | awk -v k="text" '{n=split($0,a,","); for (i=1; i<=n; i++) print a[i]}'
+}
+
+function detailGerrit
+{
+  echo "Not Implemented"
+}
+
+function getValue
+{
+  local  __resultvar=$3
+  local result=$(echo "$1" | grep "$2" | sed 's|\('$2'\)[[:space:]]\("\)*\(.*[^"]\).*$|\3|')
+  
+  eval $__resultvar="'$result'"
+}
+
+function printPatchDetail
+{
+  #change_type=$(getValue $1 '\["result","currentDetail","patches","$2","changeType"\]')
+  getValue "$1" '\["result","currentDetail","patches",'$2',"nbrComments"\]' num_comments
+  getValue "$1" '\["result","currentDetail","patches",'$2',"insertions"\]' insertions
+  getValue "$1" '\["result","currentDetail","patches",'$2',"deletions"\]' deletions
+  getValue "$1" '\["result","currentDetail","patches",'$2',"key","fileName"\]' filename
+  #echo "$1" | grep '\["result","currentDetail","patches",'$2',"key","fileName"\]'
+
+  echo "$filename \t\t | +$insertions -$deletions"
+  echo "   $num_comments Comments"
+}
+
+function printChangeDetail
+{ 
+  getValue "$1" '\["result","change","dest","branchName"\]' dest_branch
+  dest_branch=$(echo "$dest_branch" | sed -e "s|^\(refs\/heads\/\)\(.*$\).*|\2|")
+  getValue "$1" '\["result","change","open"\]' open
+  getValue "$1" '\["result","change","status"\]' status
+  getValue "$1" '\["result","change","subject"\]' subject
+  echo "Subject: $subject"
+  echo "Destination Branch: $dest_branch" 
+  echo "Status: $status"
+  echo "Open: $open"
+}
+
+
 branch_name=$(git symbolic-ref HEAD 2>/dev/null)
 short_name=$(echo "$branch_name" | sed -e 's/refs\/heads\/\(.*\)/\1/')
 
@@ -17,13 +69,46 @@ esac
 
 
 case $1 in
+test)
+  json=$(JSON.sh < detail.json)
+  echo "$json"
+  #id=$(getValue "$json" '\["result","change","changeId","id"\]')
+  #num_patches=$(getValue "$json" '\["result","change","nbrPatchSets"\]')
+  printChangeDetail "$json"
+  printPatchDetail "$json" 1
+
+  source "$HOME/.gw/config"
+
+  ;;
 install)
   pushd $(dirname "${0}") > /dev/null
   basedir=$(pwd -L)
   # Use "pwd -P" for the path without links. man bash for more info.
   popd > /dev/null
-  ln -s $basedir/gw /usr/bin/gw
+  #ln -s $basedir/gw /opt/local/bin/gw
+  in_path=$(cat $HOME/.bash_profile | grep "$basedir")
+  echo $in_path
+  if [ -z "$in_path" ]; then
+    echo "export PATH=\$PATH:$basedir" >> $HOME/.bash_profile
+  fi
+  mkdir $HOME/.gw >> /dev/null
+  if [ ! -f $HOME/.gw/config ]; then
+    echo "USE_GERRIT=0" > $HOME/.gw/config
+  fi
+  if [ "$2" == "--use-gerrit" ]; then
+    echo "Using Gerrit."
+    sed "s/\(USE_GERRIT *= *\).*/\11/" $HOME/.gw/config > $HOME/.gw/config.tmp
+    mv $HOME/.gw/config.tmp $HOME/.gw/config
+  else
+    sed "s/\(USE_GERRIT *= *\).*/\10/" $HOME/.gw/config > $HOME/.gw/config.tmp
+    mv $HOME/.gw/config.tmp $HOME/.gw/config
+  fi
+  curl -L https://raw.github.com/dominictarr/JSON.sh/master/JSON.sh -o $basedir/JSON.sh || exit 1;
+  source $HOME/.bash_profile
+  chmod +x $basedir/JSON.sh
+  source "$HOME/.gw/config"
   ;;
+
   topic)
     if git branch | grep ^..topics/$2>/dev/null 2>&1
     then
@@ -99,10 +184,9 @@ show)
   #todo fix disgusting yet awesome code
 #  fetch_id="Ib0fc89983007e531897854e3ece3d19e7b4b71a0"
 
-  json=$(curl -vs -H "Content-Type: application/json; charset=UTF-8" -H "Accept: application/json"\
-  -X POST -d '{"jsonrpc":"2.0","method":"allQueryNext","params":["'$fetch_id'","z",25],"id":3}'\
-  http://10.137.8.210:8080/gerrit/rpc/ChangeListService 2>&1 | sed -e 's/[{}]/''/g' | awk -v k="text" '{n=split($0,a,","); for (i=1; i<=n; i++) print a[i]}')
-  id=$(echo "$json" | grep "\"changes\":\[\"id\":\"id\":" | sed "s/\"changes\":\[\"id\":\"id\":\(.*\)/\1/")
+  json=$(searchGerrit $fetch_id | JSON.sh)
+  id=$(echo "$json" | grep "\[\"result\",\"changes\",0,\"id\"\]" | sed "s|.*{\"id\":\([^}].*\)}|\1|")
+  #id=$(echo "$json" | grep "\"changes\":\[\"id\":\"id\":" | sed "s/\"changes\":\[\"id\":\"id\":\(.*\)/\1/")
   owner=$(echo "$json" | grep "\"fullName\":" | sed "s/\"fullName\":\"\(.*\)\"/\1/")
   owner_email=$(echo "$json" | grep "\"preferredEmail\":" | sed "s/\"preferredEmail\":\"\([^\"].*\)*\"\]/\1/")
   status=$(echo "$json" | grep "\"status\":" | sed "s/\"status\":\"\(.*\)\"/\1/")
@@ -137,8 +221,14 @@ review)
       fi
 
       echo "Submititng changes for review"
-
-      git push origin HEAD:refs/for/topics/$very_short_name
+      #GERRIT SPECIFIC
+      if [ "$USE_GERRIT" == "1" ]; then
+        git push origin HEAD:refs/for/topics/$very_short_name
+      else
+        change_name=$(echo "$branch_name" | sed -e 's|refs\/heads\/changes\/\([^\/]*\)|\1|')
+    
+        git push origin HEAD:changes/$change_name
+      fi
       ;;
     *refs/heads/topics*)
        if [[ "$2" == "final"  ]]
@@ -147,7 +237,12 @@ review)
          git symbolic-ref HEAD refs/heads/final/$very_short_name
          git merge --squash $branch_name 
          git commit -m "Submitting $very_short_name for inclusion into the next release"
-         git push origin HEAD:refs/for/master
+         #GERRIT SPECIFIC
+        if [ "$USE_GERRIT" == "1" ]; then
+          git push origin HEAD:refs/for/master
+        else
+          git push origin HEAD:master
+        fi
        else
         echo "It is bad practice to submit changes from a public topic branch, it leads to changes that are dependent."
         echo "To resolve this please run proj change <name> && git merge $short_name && proj review"
@@ -156,7 +251,12 @@ review)
       ;;
     *refs/heads/bugs/*)
       
-      git push origin HEAD:refs/for/master
+      #GERRIT SPECIFIC
+      if [ "$USE_GERRIT" == "1" ]; then
+        git push origin HEAD:refs/for/master
+      else
+        git push origin HEAD:master
+      fi
       ;;
   esac
   ;;
